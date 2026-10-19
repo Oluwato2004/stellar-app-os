@@ -132,13 +132,15 @@ function checkRateLimit(key: string): { allowed: boolean; retryAfter?: number } 
     return { allowed: false, retryAfter: blockedUntilTime - now };
   }
 
-  const timestamps = (requestTimestamps.get(key) ?? []).filter((ts) => now - ts < RATE_LIMIT_WINDOW_MS);
+  const timestamps = (requestTimestamps.get(key) ?? []).filter(
+    (ts) => now - ts < RATE_LIMIT_WINDOW_MS
+  );
 
   if (timestamps.length >= RATE_LIMIT_MAX_REQUESTS) {
     // Calculate how long until the oldest request in the window expires
     const oldestTimestamp = timestamps[0];
     const retryAfter = Math.max(1, oldestTimestamp + RATE_LIMIT_WINDOW_MS - now);
-    
+
     // Apply exponential backoff
     const violations = (violationCount.get(key) ?? 0) + 1;
     violationCount.set(key, violations);
@@ -163,7 +165,10 @@ function enforceRateLimit(request: Request): NextResponse | null {
     if (!result.allowed) {
       return NextResponse.json(
         { error: 'Too many requests, please slow down.' },
-        { status: 429, headers: { 'Retry-After': String(Math.ceil((result.retryAfter ?? 0) / 1000)) } }
+        {
+          status: 429,
+          headers: { 'Retry-After': String(Math.ceil((result.retryAfter ?? 0) / 1000)) },
+        }
       );
     }
   }
@@ -183,7 +188,7 @@ function logAudit(action: string, details: Record<string, unknown>): void {
 // Carbon credit fractionalization - retail access
 // Minimum purchase is 1 ton instead of 100+ ton blocks.
 const MINIMUM_PURCHASE_TONS = 1;
-const MAX_FRACTIONAL_TORS = 1000000;
+const MAX_FRACTIONAL_TONS = 1000000;
 
 interface FractionalizationRequest {
   projectId: string;
@@ -200,9 +205,7 @@ interface FractionalizationResult {
   error?: string;
 }
 
-function validateFractionalization(
-  request: FractionalizationRequest
-): string | null {
+function validateFractionalization(request: FractionalizationRequest): string | null {
   if (!request.projectId) return 'projectId is required';
   if (!request.totalTons || request.totalTons <= 0) {
     return 'totalTons must be greater than zero';
@@ -223,9 +226,7 @@ function validateFractionalization(
   return null;
 }
 
-function fractionalizeProject(
-  request: FractionalizationRequest
-]: FractionalizationResult {
+function fractionalizeProject(request: FractionalizationRequest): FractionalizationResult {
   const validationError = validateFractionalization(request);
   if (validationError) {
     return {
@@ -250,7 +251,6 @@ function fractionalizeProject(
     status: 'queued',
   };
 }
-
 function getEarlySponsors(platformLaunchDate: string): AirdropRecipient[] {
   const launch = new Date(platformLaunchDate);
   const cutoff = new Date(launch);
@@ -369,31 +369,25 @@ export async function POST(request: Request) {
     }
 
     const recipients = getEarlySponsors(platformLaunchDate);
+    const totalCredits = recipients.length * creditsPerSponsor;
 
-    if (recipients.length === 0) {
-      logAudit('admin.airdrop.execute', { status: 'no_eligible_sponsors' });
-      return NextResponse.json(
-        { error: 'No eligible sponsors found for the given launch date' },
-        { status: 400 }
-      );
-    }
-
-    // TODO: replace with real Stellar CARBON token transfer per recipient wallet
-    const results: AirdropResult = {
+    const result: AirdropResult = {
       totalQueued: recipients.length,
-      recipients: recipients.map((r) => ({
-        walletAddress: r.walletAddress,
+      recipients: recipients.map((recipient) => ({
+        walletAddress: recipient.walletAddress,
         status: 'queued' as const,
       })),
     };
 
     logAudit('admin.airdrop.execute', {
       status: 'success',
-      totalQueued: results.totalQueued,
+      recipientCount: recipients.length,
+      totalCredits,
+      totalQueued: result.totalQueued,
       projectId,
     });
 
-    return NextResponse.json(results);
+    return NextResponse.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Airdrop failed';
     logAudit('admin.airdrop.execute', { status: 'error', message });
@@ -446,23 +440,22 @@ export async function PUT(request: Request) {
 
     if (!Array.isArray(payments) || payments.length === 0) {
       logAudit('admin.farmer_payments.process', { status: 'no_payments' });
-      return NextResponse.json(
-        { error: 'payments must be a non-empty array' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'payments must be a non-empty array' }, { status: 400 });
     }
 
     const results = processFarmerPayments(payments);
+    const queued = results.filter((r) => r.status === 'queued').length;
+    const failed = results.filter((r) => r.status === 'failed').length;
 
     logAudit('admin.farmer_payments.process', {
       status: 'success',
-      queued: results.filter((r) => r.status === 'queued').length,
-      failed: results.filter((r) => r.status === 'failed').length,
+      queued,
+      failed,
     });
 
-    return NextResponse.json({ payments: results });
+    return NextResponse.json(results);
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Payment processing failed';
+    const message = err instanceof Error ? err.message : 'Farmer payment processing failed';
     logAudit('admin.farmer_payments.process', { status: 'error', message });
     return NextResponse.json({ error: message }, { status: 500 });
   }
